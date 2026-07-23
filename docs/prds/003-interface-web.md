@@ -47,6 +47,7 @@ Como engenheiro de plataforma, quero acessar uma página web com a listagem de t
 - Cada item da lista exibe: ID, data de criação (`created_at`), status e a severidade do problema, lida do campo `**Severidade:**` da seção do problema no Markdown (cada relatório corresponde a um único problema — PRD 002)
 - Cada item é clicável e leva à página de detalhe
 - A página é servida pela própria API FastAPI com template Jinja2
+- A listagem é alcançável a partir de qualquer página por um link "Relatórios" no cabeçalho comum (`base.html`)
 - O status é exibido como badge com mapeamento para classes CSS do `base.html`: EM_ANALISE → `badge-processing`, COMPLETO → `badge-complete`, INCOMPLETO → `badge-incomplete`, CORRIGINDO → `badge-executing`, CORRIGIDO → `badge-executed`, FALHA_CORRECAO → `badge-execution-failed`
 
 **Edge cases:**
@@ -98,6 +99,7 @@ Este PRD é um habilitador de visualização; não possui métrica de negócio p
 - [ ] Adicionar botão "Executar correção" com controle de estado (US02)
 - [ ] Tratar cenários de erro (banco indisponível, relatório não encontrado) (US01, US02)
 - [ ] Adicionar estilos CSS para conteúdo Markdown renderizado no template de detalhe (US02)
+- [ ] Adicionar link "Relatórios" no cabeçalho (`base.html`) para tornar a listagem alcançável pela navegação (US01)
 
 **Critério de conclusão:**
 - Condição: Interface web exibe listagem e detalhe dos relatórios corretamente
@@ -124,3 +126,5 @@ Este PRD é um habilitador de visualização; não possui métrica de negócio p
 - [PRD 004 - Agente de Correção](./004-agente-correcao-automatica.md) — acionado pelo botão de correção na interface
 
 ## 8. Registro de Decisões
+
+- **2026-07-23** — Adicionado link "Relatórios" no cabeçalho (`base.html`). Durante a validação manual (Milestone 1), constatou-se que a listagem só era acessível digitando a URL `/reports`: a navegação não oferecia caminho até ela. O menu comum passa a expor o link, tornando a feature alcançável a partir de qualquer página.

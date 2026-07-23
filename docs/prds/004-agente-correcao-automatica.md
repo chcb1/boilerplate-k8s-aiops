@@ -46,16 +46,17 @@ references: []
 Como SRE, quero poder acionar a correção automática de um problema a partir do relatório, para reduzir o tempo de resolução sem executar comandos manualmente.
 
 **Rules:**
-- O acionamento é feito via endpoint `POST /reports/{id}/fix` na API FastAPI
+- O acionamento é feito via endpoint `POST /reports/{id}/fix` na camada web (`web/router.py`, mesma família das rotas `/reports/{id}`)
 - O endpoint valida que o relatório existe e tem status COMPLETO ou FALHA_CORRECAO (nova tentativa após falha de correção); qualquer outro status retorna `409 Conflict`
 - A transição para CORRIGINDO é feita por UPDATE condicional atômico (`UPDATE reports SET status='CORRIGINDO' WHERE id=:id AND status IN ('COMPLETO','FALHA_CORRECAO') RETURNING id`); se nenhuma linha for atualizada, o endpoint retorna `409 Conflict` — isso evita que duas requisições concorrentes disparem dois agentes de correção para o mesmo relatório (corrida TOCTOU)
-- Atualizado o status para CORRIGINDO, o endpoint retorna `202 Accepted` imediatamente e processa a correção em background via `BackgroundTasks` do FastAPI (sem fila externa); o trabalho roda in-process e é perdido em caso de restart — daí a recuperação de startup descrita abaixo
+- A transição para CORRIGINDO acontece de forma síncrona no request (antes de responder), garantindo que o `409 Conflict` de concorrência seja decidido antes da resposta; a correção em si roda em background via `BackgroundTasks` do FastAPI (sem fila externa). Semanticamente é um `202 Accepted` (aceito e processado de forma assíncrona), mas — por ser acionado por um `<form method="post">` no browser — o endpoint responde `303 See Other` redirecionando para `GET /reports/{id}`; o usuário vê o badge CORRIGINDO e acompanha a evolução via refresh da página (sem JS/polling no v1). O trabalho roda in-process e é perdido em caso de restart — daí a recuperação de startup descrita abaixo
+- O `BackgroundTask` NÃO reutiliza a sessão do request (que é fechada junto com a resposta 303): ele abre a sua própria `AsyncSession` a partir de `app.state.sessionmaker` e recebe apenas o `report_id` (UUID), nunca o objeto ORM ligado à sessão do request — mesmo padrão do coletor de eventos
 - O resultado da correção é consultado pela página de detalhe do relatório (PRD 003), que exibe o status atualizado e o **feedback da correção** (resposta do agente: Ações Executadas + validação) persistido na coluna `correction_result`, numa seção "Resultado da Correção"
 - O agente é construído com LangChain e se conecta ao cluster via MCP Server Kubernetes (Flux159), usando `langchain-mcp-adapters` para conectar por HTTP (`streamable_http`) ao MCP executado localmente via `npx` (transport HTTP/streamable) em `MCP_SERVER_URL` (padrão `http://localhost:3001/mcp`) — mesmo padrão do PRD 002
 - O modelo é configurável via variável de ambiente `AGENT_MODEL_NAME` (padrão: `claude-haiku-4-5`), reutilizando a mesma env var do PRD 002
 - Ao contrário do agente de análise, todas as tools do MCP Server são expostas ao agente de correção (acesso irrestrito, conforme decisão-chave 2)
 - O número máximo de iterações é configurável via `CORRECTION_MAX_ITERATIONS` (padrão: 25), implementado com `ModelCallLimitMiddleware(run_limit, exit_behavior="end")`; ao atingir o limite o run termina graciosamente (sem nova chamada ao modelo) e a resposta final não segue o formato `CORRIGIDO:/FALHA:`, de modo que o parsing da primeira linha (ver abaixo) a classifica como FALHA_CORRECAO — não há detecção separada de "limite atingido"
-- O agente lê o relatório de análise (conteúdo Markdown) e extrai a correção recomendada das seções **Solução Recomendada** e **Comando Sugerido** do relatório (PRD 002), traduzindo o comando sugerido em chamadas de tool MCP estruturadas (ex: `kubectl_patch`, `kubectl_scale`)
+- O relatório de análise inteiro (conteúdo Markdown) é injetado no prompt do agente (`{report_markdown}`); ele interpreta os campos **Solucao** e **Comando sugerido** produzidos pelo PRD 002 (campos inline do bloco `## Problema N` do relatório, não seções `##` próprias) e traduz o comando sugerido em chamadas de tool MCP estruturadas (ex: `kubectl_patch`, `kubectl_scale`)
 - O agente executa os passos de correção no cluster via MCP
 - Na v1, o agente tem acesso irrestrito ao cluster
 - Relatórios órfãos em CORRIGINDO encontrados no startup da aplicação são marcados como FALHA_CORRECAO (recuperação de correções interrompidas por crash/restart); como FALHA_CORRECAO é um status re-acionável, a correção pode ser disparada novamente
@@ -169,7 +170,7 @@ Como SRE, quero que o agente verifique se o problema foi resolvido após a corre
 │       ▼                                                │
 │  ┌──────────────────────┐                              │
 │  │ POST /reports/{id}/  │                              │
-│  │ fix                  │──▶ 202 Accepted              │
+│  │ fix                  │──▶ 303 See Other (→ detalhe) │
 │  │ (validação + dispatch│                              │
 │  │  assíncrono)         │                              │
 │  └────────┬─────────────┘                              │
@@ -215,7 +216,7 @@ Como SRE, quero que o agente verifique se o problema foi resolvido após a corre
 | Agente lê relatório e executa passos de correção via MCP | Teste de integração com cenário de erro conhecido e correção previsível |
 | Status do relatório atualizado corretamente (CORRIGINDO → CORRIGIDO ou FALHA_CORRECAO) | Teste automatizado verificando transições de status |
 | Verificação pós-correção detecta se problema persiste | Teste com cenário onde correção não resolve o problema |
-| Endpoint `POST /reports/{id}/fix` retorna 202 e processa em background | Teste de integração validando resposta e execução assíncrona |
+| Endpoint `POST /reports/{id}/fix` responde 303 (redirect para o detalhe) e processa a correção em background | Teste de integração validando o redirect e a execução assíncrona |
 | Endpoint rejeita com 409 para status diferente de COMPLETO/FALHA_CORRECAO | Teste com relatórios em status CORRIGINDO, EM_ANALISE, INCOMPLETO, CORRIGIDO |
 | Endpoint aceita FALHA_CORRECAO e reinicia a correção | Teste acionando `/fix` em relatório FALHA_CORRECAO e validando transição para CORRIGINDO |
 | Transição COMPLETO/FALHA_CORRECAO → CORRIGINDO é atômica (rejeita concorrência) | Teste de concorrência: duas requisições simultâneas, apenas uma dispara a correção |

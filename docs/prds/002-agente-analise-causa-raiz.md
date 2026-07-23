@@ -30,7 +30,7 @@ references: ["003", "004"]
 ### Decisoes-chave
 
 1. **LangChain como framework de agente** — Abstracoes prontas para ReAct, integracao com MCP via pacote `langchain-mcp-adapters` e gerenciamento de tools
-2. **Claude Sonnet como LLM** — Equilibrio entre capacidade de raciocinio e custo/velocidade para troubleshooting
+2. **Claude como LLM (default `claude-haiku-4-5`)** — Modelo configuravel via `AGENT_MODEL_NAME`; o padrao Haiku prioriza custo/velocidade para troubleshooting, com modelos classe Sonnet como override opcional para casos que exijam mais raciocinio (ver §9, decisao D2)
 3. **MCP Server Kubernetes (Flux159)** — Servidor MCP existente para interacao com o cluster, evitando implementacao propria
 4. **Loop de tool-calling (estilo ReAct)** — Permite iteracao entre analise e acao ate encontrar a causa raiz real; o `create_agent` implementa tool-calling nativo da API
 5. **Deduplicacao por `metadata.uid`** — Eventos ja vinculados a relatorios ativos sao ignorados; eventos vinculados a relatorios com status CORRIGIDO ou INCOMPLETO sao reanalisados (possivel reincidencia / analise nao concluida). Limitacao conhecida: o EventAggregator do Kubernetes pode criar novos objetos Event com UIDs diferentes para o mesmo problema logico em alta frequencia (10+ ocorrencias em 10 minutos). Risco aceito na v1.
@@ -55,6 +55,7 @@ Como SRE, quero que eventos ja vinculados a um relatorio ativo nao sejam reanali
 - Antes de disparar a analise, verificar se os `metadata.uid` dos eventos ja estao vinculados a relatorios existentes
 - Eventos vinculados a relatorios com status EM_ANALISE, COMPLETO, CORRIGINDO ou FALHA_CORRECAO sao ignorados
 - Eventos vinculados a relatorios com status CORRIGIDO ou INCOMPLETO sao reanalisados (problema pode ter reincidido; analise nao concluida deve ser reavaliada ate o incidente ser resolvido)
+- A consulta de deduplicacao avalia a EXISTENCIA de qualquer relatorio ativo contendo o uid (overlap de arrays `event_uids && :uids` filtrado por status IN {EM_ANALISE, COMPLETO, CORRIGINDO, FALHA_CORRECAO}), **nunca** o status do relatorio mais recente: se ao menos um relatorio ativo contem o uid, o evento e ignorado — mesmo que exista tambem um relatorio antigo em CORRIGIDO/INCOMPLETO com o mesmo uid (ver §9, decisao D4)
 - A tabela de relatorios armazena o campo `event_uids` (`TEXT[]` com GIN index — lista de UIDs dos eventos Kubernetes analisados)
 - Relatorios em EM_ANALISE ha mais de `ANALYSIS_STALE_TIMEOUT_MINUTES` minutos (padrao: 30) sao marcados como INCOMPLETO durante a consulta de deduplicacao — recuperacao de analises estagnadas, complementar a recuperacao do startup
 
@@ -69,9 +70,9 @@ Como SRE, quero que eventos ja vinculados a um relatorio ativo nao sejam reanali
 Como SRE, quero que um agente de IA investigue automaticamente a causa raiz dos eventos coletados, para reduzir o tempo de diagnostico e nao depender da experiencia individual de cada operador.
 
 **Rules:**
-- O agente e construido com LangChain + Claude Sonnet em loop de tool-calling (estilo ReAct), via `create_agent` de `langchain.agents`
+- O agente e construido com LangChain + Claude em loop de tool-calling (estilo ReAct), via `create_agent` de `langchain.agents`
 - O modelo e configuravel via variavel de ambiente `AGENT_MODEL_NAME` (padrao: `claude-haiku-4-5`)
-- O agente se conecta ao cluster via MCP Server Kubernetes (Flux159), utilizando `langchain-mcp-adapters` para converter tools MCP em tools LangChain; o servidor e executado localmente via `npx` expondo transport HTTP (streamable), e o agente conecta por HTTP (`streamable_http`) em `MCP_SERVER_URL` (padrao `http://localhost:3001/mcp`)
+- O agente se conecta ao cluster via MCP Server Kubernetes (Flux159), utilizando `langchain-mcp-adapters` para converter tools MCP em tools LangChain; o servidor e executado localmente via `npx` expondo transport HTTP (streamable), e o agente conecta com `transport: "http"` (nome canonico atual do `langchain-mcp-adapters`; `streamable_http` e alias legado) em `MCP_SERVER_URL` (padrao `http://localhost:3001/mcp`)
 - Apenas as tools de leitura `kubectl_get`, `kubectl_describe` e `kubectl_logs` sao vinculadas ao agente — a lista retornada pelo `langchain-mcp-adapters` e filtrada por nome antes da criacao do agente; tools de escrita (`kubectl_apply`, `kubectl_patch`, `kubectl_delete`, etc.) nao sao expostas
 - A investigacao segue o ciclo: analise → acao → reflexao → proxima acao
 - O agente itera ate identificar a causa raiz ou atingir o limite de iteracoes, configuravel via variavel de ambiente `AGENT_MAX_ITERATIONS` (padrao: 25), implementado com `ModelCallLimitMiddleware(run_limit, exit_behavior="end")` no `create_agent`. Com `exit_behavior="end"` o run encerra graciosamente sem uma chamada extra ao modelo — nao ha relatorio parcial garantido; a resposta final (possivelmente vazia ou sem secoes de problema identificaveis) mantem o relatorio do batch como INCOMPLETO (ver US03 edge cases)
@@ -162,7 +163,7 @@ Como SRE, quero que cada investigacao produza um relatorio Markdown estruturado 
 **Rules:**
 - A resposta do agente segue a estrutura definida no prompt: resumo com contagem por severidade e uma secao por problema (severidade, namespace, recursos afetados, eventos, causa raiz, evidencias, solucao recomendada e comando sugerido)
 - Cada secao de problema e persistida como um relatorio proprio no PostgreSQL, com ID unico e os event_uids dos eventos daquele problema (mapeados pelo campo **Eventos** da resposta)
-- Durante a analise existe um unico relatorio EM_ANALISE por batch (com todos os event_uids); ao final, ele e substituido pelo conjunto de relatorios por problema na mesma transacao
+- Durante a analise existe um unico relatorio EM_ANALISE por batch (com todos os event_uids); ao final, ele e substituido pelo conjunto de relatorios por problema na mesma transacao. A substituicao e **condicional ao status**: o swap so ocorre se o relatorio do batch ainda estiver EM_ANALISE — se ja tiver sido transicionado para INCOMPLETO (ex.: pelo timeout de estagnacao ou pela recuperacao de startup enquanto a analise ainda rodava), o swap e abortado e o resultado do agente e descartado, evitando reintroduzir relatorios para eventos ja liberados para reanalise (ver §9, decisao D3)
 - A tabela de relatorios armazena: id (`UUID`), conteudo markdown, status, event_uids (`TEXT[]` — UIDs dos eventos Kubernetes analisados), `created_at` e `updated_at` (timestamps de criacao e atualizacao)
 - Status possiveis do relatorio: EM_ANALISE, COMPLETO, INCOMPLETO, CORRIGINDO, CORRIGIDO, FALHA_CORRECAO
 - Fluxo de status: EM_ANALISE → COMPLETO (analise OK) | INCOMPLETO (analise inconclusiva ou abortada por falha de infraestrutura); COMPLETO → CORRIGINDO → CORRIGIDO | FALHA_CORRECAO; FALHA_CORRECAO → CORRIGINDO (nova tentativa de correcao, PRD 004 — FALHA_CORRECAO nao e terminal)
@@ -271,8 +272,8 @@ Como SRE, quero que cada investigacao produza um relatorio Markdown estruturado 
 **Funcionalidades:** US02, US03
 
 - [ ] Implementar `EventHandler` do PRD 001 como ponto de entrada do pipeline de analise (US02)
-- [ ] Configurar LangChain com Claude Sonnet (`AGENT_MODEL_NAME`, padrao `claude-haiku-4-5`) em loop de tool-calling via `create_agent` de `langchain.agents` (US02)
-- [ ] Configurar MCP Server Kubernetes (Flux159) via `langchain-mcp-adapters` (MCP executado via npx com transport HTTP/streamable, conexao `streamable_http` em `MCP_SERVER_URL`), filtrando apenas as tools de leitura kubectl_get, kubectl_describe e kubectl_logs (US02)
+- [ ] Configurar LangChain com Claude (`AGENT_MODEL_NAME`, padrao `claude-haiku-4-5`; Sonnet como override opcional) em loop de tool-calling via `create_agent` de `langchain.agents` (US02)
+- [ ] Configurar MCP Server Kubernetes (Flux159) via `langchain-mcp-adapters` (MCP executado via npx com transport HTTP/streamable, conexao `transport: "http"` em `MCP_SERVER_URL`), filtrando apenas as tools de leitura kubectl_get, kubectl_describe e kubectl_logs (US02)
 - [ ] Implementar logica de investigacao iterativa com limite de iteracoes configuravel via `AGENT_MAX_ITERATIONS`, usando `ModelCallLimitMiddleware` (US02)
 - [ ] Gerar relatorios Markdown por problema seguindo a estrutura do prompt, com mapeamento de event_uids pelo campo **Eventos** (US03)
 - [ ] Substituir o relatorio EM_ANALISE do batch pelos relatorios por problema com status COMPLETO/INCOMPLETO (US03)
@@ -292,6 +293,7 @@ Como SRE, quero que cada investigacao produza um relatorio Markdown estruturado 
 | MCP Server Kubernetes pode nao suportar todas as operacoes necessarias | Medio | Validar operacoes necessarias contra a API do MCP Server antes do desenvolvimento. Operacoes de leitura (kubectl_get, kubectl_describe, kubectl_logs) confirmadas como suportadas | Pendente |
 | EventAggregator do Kubernetes cria novos Event objects com UIDs diferentes para o mesmo problema logico em alta frequencia (10+ ocorrencias em 10 min) | Baixo | Risco aceito na v1. Deduplicacao por `metadata.uid` nao colapsara eventos agregados. Mitigacao futura: deduplicar por `involvedObject` + `reason` + `namespace` | Aceito |
 | Reanalise recorrente de incidentes com relatorio INCOMPLETO consome tokens a cada recorrencia (recoleta) dos eventos | Medio | Aceito — analise nao concluida deve ser reavaliada ate o incidente ser resolvido. Mitigacao futura: limite de reanalises por incidente | Aceito |
+| Dedup depende da formatacao correta do campo **Eventos** pelo LLM (saida markdown pura, sem schema tipado) — se o modelo omitir ou reformatar um uid, o mapeamento uid->problema vaza e o evento fica sem relatorio proprio | Medio | Risco aceito na v1 (decisao D1, §9): markdown puro pela simplicidade. Prompt exige listar o uid de CADA evento em exatamente um problema; evento nao referenciado gera warning e e reanalisado se recorrer. Mitigacao futura: saida estruturada (`ProviderStrategy`) para os campos de mapeamento | Aceito |
 
 **Dependencias:**
 
@@ -299,7 +301,7 @@ Como SRE, quero que cada investigacao produza um relatorio Markdown estruturado 
 |-------------|------|--------|----------------------|
 | PRD 001 — Coleta de eventos (contrato de saida e `EventHandler`) | Interna | Em desenvolvimento | Sem eventos coletados, nao ha o que analisar |
 | LangChain (`langchain` + `langchain-anthropic` + `langgraph`) | Externa | Disponivel | Framework base do agente |
-| `langchain-mcp-adapters` (>=0.3.0) | Externa | Disponivel | Integracao entre LangChain e MCP Server. Piso >=0.3.0: o prompt do agente assume que erro de tool retorna ao modelo como tool message; versoes anteriores lancam `ToolException` e quebram o loop |
+| `langchain-mcp-adapters` (>=0.3.0) | Externa | Disponivel | Integracao entre LangChain e MCP Server. Piso >=0.3.0: `handle_tool_errors=True` (default) faz erro de EXECUCAO de tool (ex.: params invalidos, recurso ausente) retornar ao modelo como `ToolMessage(status="error")` para auto-correcao; versoes anteriores lancam `ToolException` e quebram o loop. Falhas de transporte/sessao (ex.: MCP Server indisponivel) SEMPRE levantam excecao, independente do flag — tratadas pelo handler como abort -> INCOMPLETO |
 | MCP Server Kubernetes (Flux159) | Externa | Disponivel | Sem MCP, agente nao interage com o cluster |
 | Node.js + npx (runtime do MCP Server Kubernetes, executado localmente com transport HTTP) | Externa | A provisionar | Sem o runtime Node, o MCP server nao inicia |
 | API Claude (Anthropic) | Externa | Disponivel | Sem LLM, agente nao funciona |
@@ -318,3 +320,27 @@ Como SRE, quero que cada investigacao produza um relatorio Markdown estruturado 
 - [langchain-mcp-adapters](https://github.com/langchain-ai/langchain-mcp-adapters) — pacote de integracao LangChain + MCP
 
 ## 9. Registro de Decisoes
+
+Decisoes tomadas em 2026-07-22, apos revisao de design e verificacao das APIs (LangChain OSS v1 + `langchain-mcp-adapters`).
+
+### D1 — Saida do agente: markdown puro
+
+- **Decisao**: o agente responde APENAS com o relatorio em markdown; o mapeamento uid->problema e extraido por parse do campo **Eventos**.
+- **Alternativa considerada**: saida hibrida com `ProviderStrategy` (campos tipados `event_uids`/`severidade`/`namespace` + narrativa markdown), que na v1 e integrada ao loop principal sem chamada extra de LLM.
+- **Justificativa**: simplicidade na v1. O risco de vazamento do mapeamento (LLM omitir/reformatar um uid) esta registrado na tabela de riscos (§7) e aceito; mitigacao futura e migrar os campos de mapeamento para saida estruturada.
+
+### D2 — Modelo default: Haiku
+
+- **Decisao**: `AGENT_MODEL_NAME` tem default `claude-haiku-4-5`; modelos classe Sonnet ficam como override opcional.
+- **Justificativa**: prioriza custo/velocidade na v1. A taxa de acerto de causa raiz sera monitorada (risco #1, §7); se ficar abaixo da meta, promover o default para um modelo de maior capacidade e a primeira alavanca.
+- **Ajuste no doc**: removidas as mencoes que fixavam "Claude Sonnet" como o modelo (decisao 2, US02, Milestone 2).
+
+### D3 — Swap de relatorio status-aware
+
+- **Decisao**: a substituicao do relatorio EM_ANALISE do batch pelos relatorios por problema so ocorre se o relatorio ainda estiver EM_ANALISE. Se ja tiver sido transicionado para INCOMPLETO (timeout de estagnacao ou recuperacao de startup durante a analise), o swap e abortado e o resultado do agente e descartado.
+- **Justificativa**: evita a race entre uma analise lenta-mas-viva e a recuperacao por `ANALYSIS_STALE_TIMEOUT_MINUTES`, que poderia reintroduzir relatorios para eventos ja liberados para reanalise (analise duplicada). Requer que o `ANALYSIS_STALE_TIMEOUT_MINUTES` seja mantido acima do pior caso de runtime do agente.
+
+### D4 — Semantica da query de deduplicacao
+
+- **Decisao**: a dedup avalia a EXISTENCIA de qualquer relatorio ativo contendo o uid (overlap `event_uids && :uids` com status ativo), nunca o status do relatorio mais recente.
+- **Justificativa**: um mesmo uid pode aparecer em varios relatorios ao longo do tempo (ex.: CORRIGIDO antigo + EM_ANALISE atual); avaliar apenas o mais recente poderia liberar indevidamente um evento ja em tratamento.
