@@ -71,6 +71,7 @@ async def apply_analysis(
             batch.markdown = first.markdown
             batch.status = ReportStatus.INCOMPLETO if first.inconclusive else ReportStatus.COMPLETO
             batch.severity = first.severity
+            batch.title = first.title
             batch.event_uids = first.event_uids
             for problem in others:
                 session.add(
@@ -78,6 +79,7 @@ async def apply_analysis(
                         markdown=problem.markdown,
                         status=ReportStatus.INCOMPLETO if problem.inconclusive else ReportStatus.COMPLETO,
                         severity=problem.severity,
+                        title=problem.title,
                         event_uids=problem.event_uids,
                         attempt_count=attempts,
                     )

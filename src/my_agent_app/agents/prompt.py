@@ -62,7 +62,10 @@ Descricao clara do problema.
 Acao especifica para corrigir.
 
 ### Comando Sugerido
+Coloque o comando SEMPRE em um bloco de codigo cercado, sem texto adicional dentro do bloco:
+```bash
 kubectl patch deployment nome -n namespace --type=merge -p '{"spec":...}'
+```
 
 Repita a secao para cada problema. Responda APENAS com o relatorio markdown.
 """

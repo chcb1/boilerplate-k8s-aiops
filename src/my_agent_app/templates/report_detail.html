@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }} - My Agent App{% endblock %}
+
+{% block extra_style %}
+.back-link { color: #94a3b8; font-size: 0.875rem; text-decoration: none; }
+.back-link:hover { color: #e2e8f0; }
+.report-title { font-size: 1.5rem; margin: 0.75rem 0 1rem; overflow-wrap: anywhere; }
+.meta { display: grid; grid-template-columns: max-content 1fr; gap: 0.35rem 1.5rem; font-size: 0.875rem; margin-bottom: 2rem; }
+.meta dt { color: #94a3b8; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.report-content { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 1.5rem; overflow-wrap: anywhere; }
+.report-content h1, .report-content h2, .report-content h3, .report-content h4 { margin: 1.25rem 0 0.5rem; line-height: 1.3; }
+.report-content > :first-child { margin-top: 0; }
+.report-content h2 { font-size: 1.25rem; }
+.report-content h3 { font-size: 1.05rem; color: #93c5fd; }
+.report-content p { margin: 0.5rem 0; }
+.report-content ul, .report-content ol { margin: 0.5rem 0 0.5rem 1.5rem; }
+.report-content a { color: #93c5fd; }
+.report-content code { background: #0f172a; padding: 0.1rem 0.35rem; border-radius: 4px; font-size: 0.85em; }
+.report-content pre { background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 0.85rem 1rem; overflow-x: auto; margin: 0.75rem 0; }
+.report-content pre code { background: none; padding: 0; font-size: 0.85rem; }
+.report-content table { border-collapse: collapse; margin: 0.75rem 0; }
+.report-content th, .report-content td { border: 1px solid #334155; padding: 0.4rem 0.75rem; text-align: left; }
+.report-content blockquote { border-left: 3px solid #475569; padding-left: 1rem; color: #cbd5e1; margin: 0.75rem 0; }
+.report-content hr { border: none; border-top: 1px solid #334155; margin: 1.25rem 0; }
+{% endblock %}
+
+{% block content %}
+<a href="/reports" class="back-link">&larr; Relatórios</a>
+<h2 class="report-title">{{ title }}</h2>
+
+<dl class="meta">
+    <dt>Status</dt>
+    <dd><span class="badge {{ badge_class }}">{{ report.status }}</span></dd>
+    <dt>Severidade</dt>
+    <dd>
+        {% if report.severity %}
+        <span class="badge sev-{{ report.severity | lower }}">{{ report.severity }}</span>
+        {% else %}—{% endif %}
+    </dd>
+    <dt>Criado em</dt>
+    <dd>{{ report.created_at | datetime }}</dd>
+    <dt>Atualizado em</dt>
+    <dd>{{ report.updated_at | datetime }}</dd>
+    <dt>Tentativas de análise</dt>
+    <dd>{{ report.attempt_count }}</dd>
+    <dt>Eventos</dt>
+    <dd>{{ event_count }}</dd>
+    <dt>ID</dt>
+    <dd class="mono">{{ report.id }}</dd>
+</dl>
+
+{% if content %}
+<article class="report-content">{{ content }}</article>
+{% else %}
+<div class="empty-state">
+    {% if in_progress %}
+    <p>A análise está em andamento. Recarregue a página em instantes.</p>
+    {% else %}
+    <p>Este relatório não tem conteúdo de análise.</p>
+    {% endif %}
+</div>
+{% endif %}
+{% endblock %}

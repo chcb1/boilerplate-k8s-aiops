@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 logger = logging.getLogger(__name__)
 
 SEVERITIES = ("CRITICO", "ALTO", "MEDIO", "BAIXO")
+MAX_TITLE_LENGTH = 255  # tamanho da coluna reports.title
 
 _PROBLEM_HEADING = re.compile(r"^##[ \t]+Problema[ \t]+\d+[ \t]*:?[ \t]*(?P<title>.*)$", re.IGNORECASE | re.MULTILINE)
 _SEVERITY = re.compile(r"\*\*Severidade:?\*\*:?[ \t]*(?P<value>[^\n]*)", re.IGNORECASE)
@@ -67,7 +68,7 @@ def parse_report(response: str, batch_uids: list[str]) -> ParseResult:
     for index, heading in enumerate(headings):
         end = headings[index + 1].start() if index + 1 < len(headings) else len(response)
         section = response[heading.start():end].strip().removesuffix("---").rstrip()
-        title = heading["title"].strip() or f"Problema {index + 1}"
+        title = (heading["title"].strip() or f"Problema {index + 1}")[:MAX_TITLE_LENGTH].rstrip()
 
         uids: list[str] = []
         for token in _mentioned_uids(section):

@@ -174,3 +174,25 @@ async def test_mark_incomplete_definitive_failure_logs_markdown(sessionmaker, fa
         assert await mark_incomplete(Flaky(sessionmaker, 99), batch.id, "# parcial") is False
 
     assert "# parcial" in caplog.text
+
+
+async def test_titles_are_persisted_for_reused_and_inserted_reports(sessionmaker):
+    batch = await new_batch(sessionmaker, ["u1", "u2"])
+    parsed = ParseResult([problem(["u1"], title="Pod em OOMKilled"), problem(["u2"], title="Imagem inexistente")])
+
+    await apply_analysis(sessionmaker, batch.id, parsed, "raw")
+
+    titles = {r.event_uids[0]: r.title for r in await all_reports(sessionmaker)}
+    assert titles == {"u1": "Pod em OOMKilled", "u2": "Imagem inexistente"}
+
+
+async def test_reports_without_a_problem_have_no_title(sessionmaker):
+    batch = await new_batch(sessionmaker, ["u1", "u2"])
+    await apply_analysis(sessionmaker, batch.id, ParseResult([problem(["u1"])], unreferenced=["u2"]), "raw")
+    other = await new_batch(sessionmaker, ["u3"])
+    await apply_analysis(sessionmaker, other.id, ParseResult([], ["u3"]), "sem formato")
+
+    by_uid = {r.event_uids[0]: r for r in await all_reports(sessionmaker)}
+    assert by_uid["u1"].title == "p"
+    assert by_uid["u2"].title is None  # nao referenciado
+    assert by_uid["u3"].title is None  # resposta sem problemas

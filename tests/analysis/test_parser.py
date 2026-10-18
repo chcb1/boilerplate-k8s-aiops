@@ -151,3 +151,20 @@ def test_response_without_problems(response):
 
 def test_none_response_is_treated_as_empty():
     assert parse_report(None, ["u1"]).problems == []
+
+
+def test_title_is_extracted_from_the_heading():
+    [p] = parse_report(problem(1, "ALTO", "u1"), ["u1"]).problems
+    assert p.title == "causa 1"
+
+
+def test_long_title_is_truncated_to_the_column_size():
+    text = problem(1, "ALTO", "u1").replace("causa 1", "x" * 400)
+    [p] = parse_report(text, ["u1"]).problems
+    assert p.title == "x" * 255
+
+
+def test_empty_title_falls_back_to_the_problem_number():
+    text = problem(1, "ALTO", "u1").replace("## Problema 1: causa 1", "## Problema 1:")
+    [p] = parse_report(text, ["u1"]).problems
+    assert p.title == "Problema 1"

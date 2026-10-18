@@ -36,7 +36,18 @@ O codigo da aplicacao fica em `src/my_agent_app/` e e empacotado via hatchling (
 
 - **Database** (`database.py`) — Engine async SQLAlchemy + asyncpg, configurado via `DATABASE_URL`
 - **API** (`api/router.py`) — Health check
-- **Interface Web** (`web/router.py`) — Pagina inicial. Templates Jinja2 em `src/my_agent_app/templates/`
+- **Interface Web** (`web/router.py`) — Pagina inicial e relatorios de analise (somente leitura). Templates Jinja2 em `src/my_agent_app/templates/`
+
+### Interface Web de relatorios
+
+| Rota | Descricao |
+|------|-----------|
+| `GET /reports` | Lista os 200 relatorios mais recentes (titulo, severidade, status, data, ID) |
+| `GET /reports/{id}` | Detalhe com o Markdown renderizado; 404 para ID inexistente ou malformado |
+
+- O Markdown dos relatorios vem de um LLM que le logs do cluster: e sanitizado com `nh3` antes de ser exibido (`web/markdown.py`).
+- Banco indisponivel responde 503 com pagina de erro.
+- **Sem autenticacao na v1.** As paginas mostram dados internos do cluster e o comando padrao sobe o servidor com `--host 0.0.0.0`; restrinja o acesso por rede (ou use `--host 127.0.0.1`). O risco aumenta quando o PRD 004 acrescentar a execucao da correcao.
 
 ### Modulos placeholder (a implementar)
 

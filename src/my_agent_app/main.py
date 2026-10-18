@@ -20,6 +20,7 @@ from my_agent_app.api.router import router as api_router
 from my_agent_app.collector.client import ClusterEvents
 from my_agent_app.collector.loop import EventCollector
 from my_agent_app.database import get_database_url
+from my_agent_app.web.router import DATABASE_ERRORS, database_unavailable
 from my_agent_app.web.router import router as web_router
 
 
@@ -51,3 +52,5 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="My Agent App", lifespan=lifespan)
 app.include_router(api_router)
 app.include_router(web_router)
+for error in DATABASE_ERRORS:
+    app.add_exception_handler(error, database_unavailable)

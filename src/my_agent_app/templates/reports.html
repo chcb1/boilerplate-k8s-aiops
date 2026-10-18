@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+
+{% block title %}Relatórios - My Agent App{% endblock %}
+
+{% block extra_style %}
+.page-title { font-size: 1.5rem; margin-bottom: 1.25rem; }
+.reports-table { width: 100%; border-collapse: collapse; }
+.reports-table th, .reports-table td {
+    text-align: left;
+    padding: 0.65rem 0.75rem;
+    border-bottom: 1px solid #334155;
+    font-size: 0.9rem;
+}
+.reports-table th { color: #94a3b8; font-weight: 600; font-size: 0.75rem; text-transform: uppercase; }
+.reports-table tbody tr:hover { background: #1e293b; }
+.reports-table a { color: #93c5fd; text-decoration: none; }
+.reports-table a:hover { text-decoration: underline; }
+.muted { color: #64748b; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.notice { margin-top: 1rem; color: #fbbf24; font-size: 0.875rem; }
+{% endblock %}
+
+{% block content %}
+<h2 class="page-title">Relatórios</h2>
+{% if reports %}
+<table class="reports-table">
+    <thead>
+        <tr>
+            <th>Problema</th>
+            <th>Severidade</th>
+            <th>Status</th>
+            <th>Criado em</th>
+            <th>ID</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for report in reports %}
+        <tr>
+            <td><a href="/reports/{{ report.id }}">{{ report.title }}</a></td>
+            <td>
+                {% if report.severity %}
+                <span class="badge sev-{{ report.severity | lower }}">{{ report.severity }}</span>
+                {% else %}
+                <span class="muted">—</span>
+                {% endif %}
+            </td>
+            <td><span class="badge {{ report.badge_class }}">{{ report.status }}</span></td>
+            <td>{{ report.created_at | datetime }}</td>
+            <td class="mono muted">{{ report.short_id }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% if truncated %}
+<p class="notice">Exibindo os {{ limit }} relatórios mais recentes; há relatórios mais antigos que não estão listados.</p>
+{% endif %}
+{% else %}
+<div class="empty-state">
+    <p>Nenhum relatório encontrado</p>
+</div>
+{% endif %}
+{% endblock %}

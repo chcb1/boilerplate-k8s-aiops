@@ -22,7 +22,7 @@ references: []
 
 - Interface web server-side renderizada com Jinja2 pela própria API FastAPI
 - Página de listagem com todos os relatórios e seus status
-- Página de detalhe com renderização do Markdown completo e botão para acionar correção (PRD 004)
+- Página de detalhe com renderização segura do Markdown completo (somente leitura; o botão de correção pertence ao PRD 004)
 
 ### Decisões-chave
 
@@ -34,7 +34,7 @@ references: []
 - **Autenticação e autorização** — Não contemplado nesta versão
 - **Filtros avançados ou busca na listagem** — Listagem simples sem paginação ou filtro
 - **Dashboard com métricas agregadas** — Apenas listagem e detalhe de relatórios
-- **Execução da correção** — O botão aciona o agente do PRD 004; a lógica de correção não é responsabilidade deste PRD
+- **Botão "Executar correção" e execução da correção** — Pertencem ao PRD 004 (o endpoint `POST /reports/{id}/fix`, o tratamento do 409 e a seção "Resultado da Correção"); esta entrega é somente leitura
 
 ## 3. Funcionalidades
 
@@ -43,8 +43,8 @@ references: []
 Como engenheiro de plataforma, quero acessar uma página web com a listagem de todos os relatórios de análise, para ter visibilidade do histórico de problemas investigados no cluster.
 
 **Rules:**
-- A página exibe todos os relatórios ordenados por `created_at` decrescente (mais recente primeiro)
-- Cada item da lista exibe: ID, data de criação (`created_at`), status e a severidade do problema, lida do campo `**Severidade:**` da seção do problema no Markdown (cada relatório corresponde a um único problema — PRD 002)
+- A página exibe os relatórios ordenados por `created_at` decrescente (mais recente primeiro), limitada aos 200 mais recentes, com aviso quando houver omitidos; a consulta não carrega o Markdown
+- Cada item da lista exibe: título do problema (coluna `title`, com texto substituto quando ausente), severidade (coluna `severity`; "—" quando ausente), status, data de criação (`created_at`) e o início do ID (cada relatório corresponde a um único problema — PRD 002)
 - Cada item é clicável e leva à página de detalhe
 - A página é servida pela própria API FastAPI com template Jinja2
 - A listagem é alcançável a partir de qualquer página por um link "Relatórios" no cabeçalho comum (`base.html`)
@@ -61,14 +61,14 @@ Como engenheiro de plataforma, quero visualizar o conteúdo completo de um relat
 **Rules:**
 - A página renderiza o conteúdo Markdown completo do relatório em HTML
 - Exibe o status atual do relatório
-- Inclui botão "Executar correção" que aciona o agente de correção (PRD 004)
-- O botão de correção é exibido para relatórios com status COMPLETO ou FALHA_CORRECAO (FALHA_CORRECAO permite nova tentativa após falha de correção)
-- O `id` do relatório é do tipo UUID; o parâmetro `{id}` na rota é validado pelo FastAPI como `uuid.UUID`
+- O HTML gerado a partir do Markdown é sanitizado (`nh3`) antes de ser exibido, pois o texto vem de um LLM que lê logs arbitrários do cluster; blocos de código cercados são exibidos sem formatação Markdown
+- Não há botão nem formulário nesta entrega: o botão "Executar correção" (COMPLETO ou FALHA_CORRECAO) e o tratamento do 409 são entregues pelo PRD 004
+- O `id` do relatório é do tipo UUID; a rota recebe o parâmetro como texto e o converte, de modo que um ID malformado também resulta em 404 (e não em 422)
 
 **Edge cases:**
-- Relatório com Markdown malformado → comportamento nativo da biblioteca `markdown`: produz HTML parcial sem lançar exceção; nenhuma lógica adicional necessária
-- Relatório não encontrado (ID inválido) → retornar página 404 com mensagem informativa
-- Usuário clica em "Executar correção" com correção já em andamento → botão não é exibido para status diferente de COMPLETO/FALHA_CORRECAO (regra acima); se `POST /reports/{id}/fix` retornar 409 (PRD 004), exibir mensagem "Correção já em andamento" na página de detalhe
+- Relatório com Markdown malformado → comportamento nativo da biblioteca `markdown`: produz HTML parcial sem lançar exceção
+- Relatório sem Markdown (EM_ANALISE, ou INCOMPLETO de eventos não referenciados) → mensagem informativa no lugar do conteúdo
+- Relatório não encontrado ou ID malformado → página 404 com mensagem informativa
 
 ## 4. Critérios de Aceite
 
@@ -76,9 +76,10 @@ Como engenheiro de plataforma, quero visualizar o conteúdo completo de um relat
 
 | Critério | Método de verificação |
 |----------|----------------------|
-| Interface web lista todos os relatórios com status | Teste manual em navegador |
-| Página de detalhe renderiza Markdown completo | Teste manual com relatórios de diferentes complexidades |
-| Botão de correção aparece para relatórios COMPLETO ou FALHA_CORRECAO | Teste manual com relatórios em diferentes status |
+| Interface web lista os relatórios com status | Teste automatizado de integração e conferência com `curl` (`docs/validacao-interface-web.md`) |
+| Página de detalhe renderiza Markdown completo | Teste automatizado com relatórios de diferentes complexidades |
+| Conteúdo hostil (script, `onerror`, link `javascript:`) não chega ao navegador | Teste automatizado com payload no Markdown |
+| Detalhe e listagem não oferecem controles que alterem dados | Teste automatizado (sem formulário; POST retorna 405) |
 
 ### De negócio
 
@@ -96,8 +97,8 @@ Este PRD é um habilitador de visualização; não possui métrica de negócio p
 - [ ] Criar rota FastAPI para listagem (`GET /reports`) (US01)
 - [ ] Criar template Jinja2 de detalhe do relatório com renderização Markdown (US02)
 - [ ] Criar rota FastAPI para detalhe (`GET /reports/{id: UUID}`) (US02)
-- [ ] Adicionar botão "Executar correção" com controle de estado (US02)
 - [ ] Tratar cenários de erro (banco indisponível, relatório não encontrado) (US01, US02)
+- [ ] Sanitizar o HTML renderizado e persistir o título do problema (`title`) (US01, US02)
 - [ ] Adicionar estilos CSS para conteúdo Markdown renderizado no template de detalhe (US02)
 - [ ] Adicionar link "Relatórios" no cabeçalho (`base.html`) para tornar a listagem alcançável pela navegação (US01)
 
@@ -127,4 +128,5 @@ Este PRD é um habilitador de visualização; não possui métrica de negócio p
 
 ## 8. Registro de Decisões
 
+- **2026-10-18** — Escopo da v1 reduzido a leitura e requisitos de segurança acrescentados (change `interface-web-relatorios`): (1) o botão "Executar correção" e o tratamento do 409 passam para o PRD 004, que já define o endpoint e a seção "Resultado da Correção"; (2) a severidade vem da coluna `severity`, e não de parse do Markdown, e o título da coluna `title`; (3) o HTML é sanitizado, porque a biblioteca `markdown` deixa passar `<script>`, `onerror` e links `javascript:` e o texto vem de um LLM que lê logs arbitrários; (4) o 503 cobre também `ConnectionError` e `TimeoutError`, pois conexão recusada com asyncpg não é `SQLAlchemyError`; (5) ID malformado resulta em 404.
 - **2026-07-23** — Adicionado link "Relatórios" no cabeçalho (`base.html`). Durante a validação manual (Milestone 1), constatou-se que a listagem só era acessível digitando a URL `/reports`: a navegação não oferecia caminho até ela. O menu comum passa a expor o link, tornando a feature alcançável a partir de qualquer página.
