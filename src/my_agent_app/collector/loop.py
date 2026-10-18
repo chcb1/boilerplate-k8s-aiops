@@ -1,15 +1,19 @@
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from typing import Protocol
 
 from kubernetes.client.exceptions import ApiException
 
 from my_agent_app.collector.config import get_interval_minutes
-from my_agent_app.collector.handler import EventHandler
 
 logger = logging.getLogger(__name__)
 
 FetchEvents = Callable[[], Awaitable[list[dict]]]
+
+
+class EventHandler(Protocol):
+    async def handle(self, events: list[dict]) -> None: ...
 
 
 class EventCollector:

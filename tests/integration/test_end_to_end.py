@@ -83,3 +83,57 @@ async def test_incomplete_analysis_is_retried_until_the_limit(sessionmaker):
                 r.status = ReportStatus.INCOMPLETO
 
     assert analyzer.batches == [["u1"], ["u1"]]  # 2 tentativas e para
+
+
+REPORT = """# Relatorio de Diagnostico Kubernetes
+
+## Problema 1: OOMKilled
+- **Severidade:** ALTO
+- **Eventos:** u1
+
+### Causa Raiz
+Limite de memoria baixo.
+
+## Problema 2: Imagem inexistente
+- **Severidade:** CRITICO
+- **Eventos:** u2
+
+### Causa Raiz
+Tag inexistente.
+"""
+
+
+async def test_collected_batch_becomes_one_report_per_problem_and_is_not_reanalyzed(sessionmaker):
+    from functools import partial
+
+    from langchain_core.messages import AIMessage
+
+    from my_agent_app.agents.analyst import run_analysis
+    from my_agent_app.analysis.analyzer import RootCauseAnalyzer
+    from tests.agents.fakes import ScriptedChatModel, read_only_tools, tool_call
+
+    model = ScriptedChatModel(script=[tool_call("kubectl_describe", {"resource": "pod/p"}), AIMessage(content=REPORT)])
+
+    async def load_tools():
+        return read_only_tools()
+
+    analyzer = RootCauseAnalyzer(sessionmaker, load_tools=load_tools, run_agent=partial(run_analysis, model=model))
+
+    async def fetch():
+        return [warning("u1"), warning("u2")]
+
+    collector = EventCollector(fetch, AnalysisHandler(sessionmaker, analyzer, max_attempts=3, stale_minutes=30), 60)
+
+    await collector.run_cycle()
+    await collector.drain()
+    await collector.run_cycle()  # Warnings ainda vivos: entregues de novo, mas ja tratados
+    await collector.drain()
+
+    async with sessionmaker() as session:
+        reports = list((await session.execute(select(Report))).scalars())
+    assert model.calls == 2  # uma unica investigacao (tool + resposta)
+    by_uid = {r.event_uids[0]: r for r in reports}
+    assert len(reports) == 2
+    assert (by_uid["u1"].status, by_uid["u1"].severity) == (ReportStatus.COMPLETO, "ALTO")
+    assert (by_uid["u2"].status, by_uid["u2"].severity) == (ReportStatus.COMPLETO, "CRITICO")
+    assert "Imagem inexistente" in by_uid["u2"].markdown

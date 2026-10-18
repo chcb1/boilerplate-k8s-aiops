@@ -53,7 +53,9 @@ O codigo da aplicacao fica em `src/my_agent_app/` e e empacotado via hatchling (
 | `MCP_SERVER_URL` | Endpoint HTTP do MCP Server Kubernetes (via npx) | `http://localhost:3001/mcp` |
 | `EVENT_COLLECTION_INTERVAL_MINUTES` | Intervalo do loop de coleta de eventos Warning, em minutos | `3` |
 | `ANALYSIS_MAX_ATTEMPTS` | Limite de tentativas de reanalise de eventos com relatorio INCOMPLETO | `3` |
-| `ANALYSIS_STALE_TIMEOUT_MINUTES` | Minutos em EM_ANALISE ate o relatorio ser marcado INCOMPLETO | `30` |
+| `ANALYSIS_STALE_TIMEOUT_MINUTES` | Minutos em EM_ANALISE ate o relatorio ser marcado INCOMPLETO. Deve ficar acima do pior caso de duracao do agente: se a analise terminar depois do timeout, o resultado e descartado | `30` |
+| `AGENT_MODEL_NAME` | Modelo Claude usado pelo agente de analise | `claude-haiku-4-5` |
+| `AGENT_MAX_ITERATIONS` | Limite de chamadas ao modelo por analise; ao atingir, o relatorio fica INCOMPLETO | `25` |
 
 ## Infraestrutura (docker-compose)
 

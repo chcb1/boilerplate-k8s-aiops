@@ -34,6 +34,7 @@ class Report(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     event_uids: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default=text("1"))
+    severity: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

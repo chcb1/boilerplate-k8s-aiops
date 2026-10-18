@@ -98,14 +98,3 @@ O sistema SHALL registrar em log as falhas de conectividade ou de permissao (RBA
 #### Scenario: Permissao insuficiente
 - **WHEN** a listagem falha por falta de permissao para listar eventos
 - **THEN** o log indica a permissao necessaria e o loop continua
-
-### Requirement: Exibicao dos eventos coletados no stdout
-Enquanto o processamento real nao existir, o sistema SHALL exibir no stdout os eventos coletados de cada lote, um por linha em JSON no formato do contrato de saida, precedidos de um cabecalho com a quantidade de eventos do lote.
-
-#### Scenario: Lote exibido
-- **WHEN** um ciclo coleta Warnings
-- **THEN** o stdout mostra o cabecalho do lote e um JSON valido por evento
-
-#### Scenario: Saida independente do log
-- **WHEN** o nivel ou destino do log e alterado
-- **THEN** a exibicao dos eventos no stdout permanece inalterada

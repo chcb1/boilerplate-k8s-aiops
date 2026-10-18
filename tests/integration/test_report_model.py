@@ -17,9 +17,19 @@ async def test_defaults(sessionmaker):
     async with sessionmaker() as session:
         row = (await session.execute(select(Report).where(Report.id == report.id))).scalar_one()
     assert row.attempt_count == 1
+    assert row.severity is None
     assert row.markdown == ""
     assert row.event_uids == ["u1", "u2"]
     assert row.created_at == row.updated_at
+
+
+async def test_severity_is_persisted(sessionmaker):
+    async with sessionmaker() as session, session.begin():
+        report = Report(status=ReportStatus.COMPLETO, event_uids=["u1"], severity="ALTO")
+        session.add(report)
+    async with sessionmaker() as session:
+        row = (await session.execute(select(Report).where(Report.id == report.id))).scalar_one()
+    assert row.severity == "ALTO"
 
 
 async def test_updated_at_changes_on_core_status_update(sessionmaker):

@@ -13,10 +13,11 @@ logger = logging.getLogger(__name__)
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from my_agent_app.analysis.analyzer import RootCauseAnalyzer
 from my_agent_app.analysis.dedup import recover_orphans
+from my_agent_app.analysis.handler import AnalysisHandler
 from my_agent_app.api.router import router as api_router
 from my_agent_app.collector.client import ClusterEvents
-from my_agent_app.collector.handler import EventHandler
 from my_agent_app.collector.loop import EventCollector
 from my_agent_app.database import get_database_url
 from my_agent_app.web.router import router as web_router
@@ -34,7 +35,8 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Falha ao recuperar relatorios EM_ANALISE orfaos no startup")
 
-    collector = EventCollector(ClusterEvents().fetch, EventHandler())
+    handler = AnalysisHandler(sessionmaker, RootCauseAnalyzer(sessionmaker))
+    collector = EventCollector(ClusterEvents().fetch, handler)
     collector_task = asyncio.create_task(collector.run())
     app.state.collector_task = collector_task
 
