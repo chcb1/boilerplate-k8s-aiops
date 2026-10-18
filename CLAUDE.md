@@ -51,6 +51,9 @@ O codigo da aplicacao fica em `src/my_agent_app/` e e empacotado via hatchling (
 | `ANTHROPIC_API_KEY` | Chave de API da Anthropic | (obrigatorio) |
 | `DATABASE_URL` | Connection string PostgreSQL async | `postgresql+asyncpg://aiops:aiops123@localhost:5432/aiops_k8s` |
 | `MCP_SERVER_URL` | Endpoint HTTP do MCP Server Kubernetes (via npx) | `http://localhost:3001/mcp` |
+| `EVENT_COLLECTION_INTERVAL_MINUTES` | Intervalo do loop de coleta de eventos Warning, em minutos | `3` |
+| `ANALYSIS_MAX_ATTEMPTS` | Limite de tentativas de reanalise de eventos com relatorio INCOMPLETO | `3` |
+| `ANALYSIS_STALE_TIMEOUT_MINUTES` | Minutos em EM_ANALISE ate o relatorio ser marcado INCOMPLETO | `30` |
 
 ## Infraestrutura (docker-compose)
 

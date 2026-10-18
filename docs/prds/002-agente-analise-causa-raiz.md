@@ -33,8 +33,8 @@ references: ["003", "004"]
 2. **Claude como LLM (default `claude-haiku-4-5`)** — Modelo configuravel via `AGENT_MODEL_NAME`; o padrao Haiku prioriza custo/velocidade para troubleshooting, com modelos classe Sonnet como override opcional para casos que exijam mais raciocinio (ver §9, decisao D2)
 3. **MCP Server Kubernetes (Flux159)** — Servidor MCP existente para interacao com o cluster, evitando implementacao propria
 4. **Loop de tool-calling (estilo ReAct)** — Permite iteracao entre analise e acao ate encontrar a causa raiz real; o `create_agent` implementa tool-calling nativo da API
-5. **Deduplicacao por `metadata.uid`** — Eventos ja vinculados a relatorios ativos sao ignorados; eventos vinculados a relatorios com status CORRIGIDO ou INCOMPLETO sao reanalisados (possivel reincidencia / analise nao concluida). Limitacao conhecida: o EventAggregator do Kubernetes pode criar novos objetos Event com UIDs diferentes para o mesmo problema logico em alta frequencia (10+ ocorrencias em 10 minutos). Risco aceito na v1.
-6. **Status EM_ANALISE para evitar race condition** — O relatorio e criado com status EM_ANALISE como **primeira operacao do tratamento, antes da chamada ao agente** (insert-first), garantindo que despachos concorrentes (tasks assincronas do PRD 001 que se sobrepoem) e a recuperacao de crash identifiquem os eventos como "em tratamento" e nao disparem analise duplicada. Com intervalo de coleta de ~3 min e ciclos de coleta serializados, a gravacao antecipada do EM_ANALISE dispensa trava de concorrencia (insert atomico/constraint) na v1; a trava atomica fica registrada como endurecimento futuro (intervalo muito menor ou re-disparo manual/externo)
+5. **Deduplicacao por `metadata.uid` e timestamp** — Eventos ja vinculados a relatorios ativos sao ignorados; evento sem relatorio e analisado (inclui o que falhou por infraestrutura antes de existir relatorio: o PRD 001 e sem estado e o recoleta enquanto estiver vivo, ate o TTL do apiserver); evento com relatorio CORRIGIDO so e reanalisado se `timestamp` do evento > `updated_at` do relatorio (reincidencia real, e nao mera presenca); evento com relatorio INCOMPLETO e reanalisado por presenca, limitado por `ANALYSIS_MAX_ATTEMPTS` (padrao: 3) para nao gastar tokens em loop. Limitacao conhecida: o EventAggregator do Kubernetes pode criar novos objetos Event com UIDs diferentes para o mesmo problema logico em alta frequencia (10+ ocorrencias em 10 minutos). Risco aceito na v1.
+6. **Status EM_ANALISE para evitar race condition** — O relatorio e criado com status EM_ANALISE como **primeira operacao do tratamento, antes da chamada ao agente** (insert-first), garantindo que despachos concorrentes (tasks assincronas do PRD 001 que se sobrepoem) e a recuperacao de crash identifiquem os eventos como "em tratamento" e nao disparem analise duplicada. Como o PRD 001 entrega todos os Warnings vivos a cada ciclo e o agente pode levar mais que o intervalo, a checagem de dedup e o insert do EM_ANALISE sao **atomicos**: ocorrem na mesma transacao, sob `pg_advisory_xact_lock`, que serializa apenas esse trecho curto (nao a analise)
 7. **Somente tools de leitura vinculadas ao agente** — A lista de tools retornada pelo `langchain-mcp-adapters` e filtrada para expor apenas `kubectl_get`, `kubectl_describe` e `kubectl_logs`; tools de escrita do MCP Server nao chegam ao agente de analise
 8. **Um relatorio por problema agrupado** — Cada problema identificado pelo agente vira um relatorio proprio com seus event_uids, permitindo acompanhar e corrigir cada incidente ate a resolucao de forma independente (status e correcao nos PRDs 003/004 operam por relatorio)
 
@@ -54,16 +54,20 @@ Como SRE, quero que eventos ja vinculados a um relatorio ativo nao sejam reanali
 **Rules:**
 - Antes de disparar a analise, verificar se os `metadata.uid` dos eventos ja estao vinculados a relatorios existentes
 - Eventos vinculados a relatorios com status EM_ANALISE, COMPLETO, CORRIGINDO ou FALHA_CORRECAO sao ignorados
-- Eventos vinculados a relatorios com status CORRIGIDO ou INCOMPLETO sao reanalisados (problema pode ter reincidido; analise nao concluida deve ser reavaliada ate o incidente ser resolvido)
+- Evento sem relatorio vinculado e analisado (inclui falha de infraestrutura anterior a criacao do relatorio)
+- Evento vinculado apenas a relatorios CORRIGIDO e reanalisado somente se `timestamp` do evento > `updated_at` do relatorio CORRIGIDO mais recente que contem o uid (reincidencia real); timestamp anterior ou igual significa que o evento ainda esta vivo apos a correcao e e ignorado
+- Evento vinculado apenas a relatorios INCOMPLETO e reanalisado por presenca (analise nao concluida deve ser reavaliada ate o incidente ser resolvido), enquanto o `attempt_count` for menor que `ANALYSIS_MAX_ATTEMPTS` (padrao: 3); ao atingir o limite, registrar warning e nao reanalisar. Cada reanalise cria relatorio com `attempt_count` = 1 + maior `attempt_count` dos INCOMPLETO envolvidos
+- Quando o uid tem CORRIGIDO e INCOMPLETO (sem ativo), vale a regra do relatorio mais recente por `updated_at`
 - A consulta de deduplicacao avalia a EXISTENCIA de qualquer relatorio ativo contendo o uid (overlap de arrays `event_uids && :uids` filtrado por status IN {EM_ANALISE, COMPLETO, CORRIGINDO, FALHA_CORRECAO}), **nunca** o status do relatorio mais recente: se ao menos um relatorio ativo contem o uid, o evento e ignorado — mesmo que exista tambem um relatorio antigo em CORRIGIDO/INCOMPLETO com o mesmo uid (ver §9, decisao D4)
 - A tabela de relatorios armazena o campo `event_uids` (`TEXT[]` com GIN index — lista de UIDs dos eventos Kubernetes analisados)
-- Relatorios em EM_ANALISE ha mais de `ANALYSIS_STALE_TIMEOUT_MINUTES` minutos (padrao: 30) sao marcados como INCOMPLETO durante a consulta de deduplicacao — recuperacao de analises estagnadas, complementar a recuperacao do startup
+- Relatorios em EM_ANALISE ha mais de `ANALYSIS_STALE_TIMEOUT_MINUTES` minutos (padrao: 30) sao marcados como INCOMPLETO durante a consulta de deduplicacao — recuperacao de analises estagnadas, complementar a recuperacao do startup; seus eventos passam a seguir a regra de INCOMPLETO (a tentativa estagnada conta no limite)
+- A deduplicacao (marcar estagnados, classificar uids e inserir o relatorio EM_ANALISE) roda em uma unica transacao sob `pg_advisory_xact_lock`; lotes concorrentes com o mesmo uid analisam o evento uma unica vez. O agente so e chamado apos o commit e nunca quando nada resta a analisar
 
 **Edge cases:**
 - Todos os eventos do batch ja estao em tratamento → nao disparar analise, aguardar proximo ciclo
 - Parte dos eventos do batch ja esta em tratamento → filtrar e analisar apenas os novos
-- Evento reaparece apos relatorio marcado como CORRIGIDO → reanalisar e gerar novo relatorio
-- Banco de dados indisponivel para consulta de deduplicacao → registrar erro no log e descartar o batch; como o despacho do PRD 001 e assincrono (fire-and-forget), nao ha propagacao ao coletor nem hold de marca d'agua. Evento recorrente volta no proximo ciclo; evento one-shot e perdido (risco aceito na v1)
+- Evento reincide apos relatorio marcado como CORRIGIDO (timestamp posterior ao `updated_at`) → reanalisar e gerar novo relatorio; evento ainda vivo com timestamp anterior ou igual → ignorado
+- Banco de dados indisponivel para consulta de deduplicacao → registrar erro no log e descartar o batch; como o despacho do PRD 001 e assincrono (fire-and-forget), nao ha propagacao ao coletor. O evento ainda vivo no cluster volta no proximo ciclo (o coletor nao tem estado); so e perdido se sair do cluster (TTL do apiserver) antes
 
 ### US02: Analise automatizada de causa raiz
 
@@ -174,7 +178,7 @@ Como SRE, quero que cada investigacao produza um relatorio Markdown estruturado 
 - Resposta do agente vazia ou sem secoes de problema identificaveis (falha do LLM) → manter o relatorio EM_ANALISE do batch como INCOMPLETO para rastreabilidade
 - Dois relatorios gerados simultaneamente para eventos relacionados → cada um recebe ID proprio; deduplicacao por `event_uids` impede reanalise nos ciclos futuros
 - Aplicacao reinicia durante uma analise → relatorio orfao em EM_ANALISE e marcado como INCOMPLETO no startup, liberando os eventos para reanalise
-- Evento do batch nao referenciado no campo **Eventos** de nenhum problema da resposta → registrar warning no log; o evento fica sem relatorio proprio e sera reanalisado apenas se recorrer (recoletado em um ciclo futuro)
+- Evento do batch nao referenciado no campo **Eventos** de nenhum problema da resposta → registrar warning no log; o evento fica sem relatorio proprio e, como o PRD 001 o entrega a cada ciclo enquanto vivo, volta a ser analisado nos ciclos seguintes sem teto de tentativas (ver Riscos)
 
 ## 4. Visao de Arquitetura
 
@@ -225,7 +229,7 @@ Como SRE, quero que cada investigacao produza um relatorio Markdown estruturado 
 | Criterio | Metodo de verificacao |
 |----------|----------------------|
 | Eventos com UID ja vinculado a relatorio ativo sao ignorados | Teste automatizado com eventos duplicados e relatorios em diferentes status |
-| Eventos vinculados a relatorio CORRIGIDO sao reanalisados | Teste automatizado simulando reincidencia |
+| Evento vinculado a relatorio CORRIGIDO so e reanalisado se o timestamp for posterior ao `updated_at` | Teste automatizado com timestamps posterior, igual e anterior ao `updated_at` |
 | Relatorio e criado com status EM_ANALISE antes de iniciar investigacao | Teste automatizado validando que ciclo subsequente ignora eventos em analise |
 | Agente conecta ao cluster via MCP e executa pelo menos uma iteracao ReAct | Teste de integracao com cluster de teste e evento simulado |
 | Relatorio segue a estrutura definida no prompt (resumo, severidade, causa raiz, evidencias, solucao) | Validacao de schema do Markdown via teste automatizado |
@@ -233,7 +237,8 @@ Como SRE, quero que cada investigacao produza um relatorio Markdown estruturado 
 | Cada problema do batch gera um relatorio proprio com seus event_uids | Teste com batch contendo dois problemas independentes validando a criacao de dois relatorios |
 | Relatorio EM_ANALISE estagnado alem do timeout e marcado INCOMPLETO na deduplicacao | Teste automatizado com relatorio EM_ANALISE antigo e nova consulta de deduplicacao |
 | Relatorio inconclusivo e persistido com status INCOMPLETO | Teste com cenario onde o agente atinge limite de iteracoes |
-| Eventos vinculados a relatorio INCOMPLETO sao reanalisados | Teste automatizado simulando analise inconclusiva seguida de recorrencia (recoleta) dos eventos |
+| Eventos vinculados a relatorio INCOMPLETO sao reanalisados por presenca ate `ANALYSIS_MAX_ATTEMPTS` | Teste automatizado com `attempt_count` abaixo, no limite e acima dele; validacao com eventos reais no kind (`docs/validacao-coleta-kind.md`) |
+| Dedup e criacao do relatorio EM_ANALISE sao atomicas | Teste de integracao com lotes concorrentes do mesmo uid (resultado: um unico relatorio EM_ANALISE) |
 | Relatorios EM_ANALISE orfaos sao marcados como INCOMPLETO no startup | Teste automatizado simulando restart com relatorio em EM_ANALISE |
 | Agente possui apenas tools de leitura vinculadas (kubectl_get, kubectl_describe, kubectl_logs) | Teste automatizado inspecionando a lista de tools do agente |
 | Limite de iteracoes e configuravel via `AGENT_MAX_ITERATIONS` | Teste variando o valor da env var e validando comportamento |
@@ -259,6 +264,8 @@ Como SRE, quero que cada investigacao produza um relatorio Markdown estruturado 
 - [ ] Implementar criacao de relatorio com status EM_ANALISE antes de iniciar investigacao (US01, US03)
 - [ ] Implementar recuperacao no startup: marcar relatorios EM_ANALISE orfaos como INCOMPLETO (US01, US03)
 - [ ] Implementar timeout de estagnacao de EM_ANALISE na consulta de deduplicacao (`ANALYSIS_STALE_TIMEOUT_MINUTES`) (US01)
+- [ ] Implementar a regra de reincidencia por timestamp (CORRIGIDO) e a reanalise de INCOMPLETO com limite `ANALYSIS_MAX_ATTEMPTS` e coluna `attempt_count` (US01)
+- [ ] Tornar atomicas a dedup e a criacao do relatorio EM_ANALISE (transacao com `pg_advisory_xact_lock`) (US01)
 
 **Criterio de conclusao:**
 - Condicao: Eventos duplicados sao corretamente filtrados com base no status dos relatorios existentes, incluindo EM_ANALISE
@@ -292,7 +299,8 @@ Como SRE, quero que cada investigacao produza um relatorio Markdown estruturado 
 | Custo de API do Claude pode escalar com volume alto de eventos e investigacoes longas | Medio | Monitorar uso de tokens. Limitar iteracoes do agente via `AGENT_MAX_ITERATIONS` | Pendente |
 | MCP Server Kubernetes pode nao suportar todas as operacoes necessarias | Medio | Validar operacoes necessarias contra a API do MCP Server antes do desenvolvimento. Operacoes de leitura (kubectl_get, kubectl_describe, kubectl_logs) confirmadas como suportadas | Pendente |
 | EventAggregator do Kubernetes cria novos Event objects com UIDs diferentes para o mesmo problema logico em alta frequencia (10+ ocorrencias em 10 min) | Baixo | Risco aceito na v1. Deduplicacao por `metadata.uid` nao colapsara eventos agregados. Mitigacao futura: deduplicar por `involvedObject` + `reason` + `namespace` | Aceito |
-| Reanalise recorrente de incidentes com relatorio INCOMPLETO consome tokens a cada recorrencia (recoleta) dos eventos | Medio | Aceito — analise nao concluida deve ser reavaliada ate o incidente ser resolvido. Mitigacao futura: limite de reanalises por incidente | Aceito |
+| Reanalise de incidentes com relatorio INCOMPLETO consome tokens a cada ciclo enquanto o evento estiver vivo | Medio | Mitigado por `ANALYSIS_MAX_ATTEMPTS` (padrao 3) por incidente; ao atingir o limite o evento deixa de ser reanalisado | Aceito |
+| Evento do batch nao referenciado no campo **Eventos** de nenhum problema fica sem relatorio e, por nao ter relatorio, e reanalisado a cada ciclo ate sair do cluster, sem teto de tentativas | Medio | Aberto. Mitigacao candidata: ao substituir o relatorio do batch, vincular os uids nao referenciados a um relatorio INCOMPLETO (conta no limite de tentativas) | Pendente |
 | Dedup depende da formatacao correta do campo **Eventos** pelo LLM (saida markdown pura, sem schema tipado) — se o modelo omitir ou reformatar um uid, o mapeamento uid->problema vaza e o evento fica sem relatorio proprio | Medio | Risco aceito na v1 (decisao D1, §9): markdown puro pela simplicidade. Prompt exige listar o uid de CADA evento em exatamente um problema; evento nao referenciado gera warning e e reanalisado se recorrer. Mitigacao futura: saida estruturada (`ProviderStrategy`) para os campos de mapeamento | Aceito |
 
 **Dependencias:**
